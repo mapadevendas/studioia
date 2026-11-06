@@ -1,0 +1,9 @@
+{
+  // Publicação na Cloudflare: build com `npm run build`, arquivos estáticos em out/
+  "name": "studioia",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    "directory": "./out",
+    "not_found_handling": "single-page-application"
+  }
+}

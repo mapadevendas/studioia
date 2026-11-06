@@ -1,240 +1,581 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, ArrowDownRight, ArrowRight, Bell, BookImage, BriefcaseBusiness,
-  Check, ChevronDown, CircleHelp, Clock3, Command, Copy, FileImage,
-  FolderOpen, Grid2X2, Image as ImageIcon, LayoutDashboard, LibraryBig,
-  Menu, MoreHorizontal, Palette, Plus, Search, Settings2, Sparkles,
-  SquarePen, WandSparkles, X, Layers3, Type, Shapes, Download
+  ArrowDownRight, ArrowRight, Bell, Check, ChevronDown, Cloud, Copy, FolderOpen, LayoutGrid,
+  ImagePlus, LayoutDashboard, LibraryBig, Menu, MoreHorizontal, Palette, Pencil, Plus, Search, Settings2,
+  SquarePen, Trash2, Upload, WandSparkles, X, RotateCcw, FileJson, HardDrive,
 } from "lucide-react";
+import logo from "../../assets/uploads/cardume-logo.webp";
+import Editor from "@/components/Editor";
+import SlideCanvas from "@/components/SlideCanvas";
+import { BrandModal, ConfirmModal, CreateProjectModal, FORMAT_ICONS, NewBrandButton, type CreateDefaults } from "@/components/Modals";
+import { Modal, Segmented, StoredImage, Toggle, formatBytes, timeAgo } from "@/components/ui";
+import { FONTS, FORMATS, RATIO_SIZE, TEMPLATES, cloneSlides, uid } from "@/lib/data";
+import { downloadBlob, prepareUpload } from "@/lib/images";
+import { useStudio } from "@/lib/useStudio";
+import type { Brand, FormatName, LibraryImage, Project, StudioData, Template } from "@/lib/types";
 
-type Project = {
-  id: number;
-  title: string;
-  format: string;
-  brand: string;
-  updated: string;
-  theme: string;
-  slides: number;
-};
+type Page = "Início" | "Projetos" | "Identidade visual" | "Biblioteca" | "Modelos" | "Configurações" | "Editor";
+type Confirm = { title: string; message: string; confirmLabel: string; run: () => void };
 
-const initialProjects: Project[] = [
-  { id: 1, title: "Consórcio sem complicação", format: "Carrossel", brand: "Ademicon", updated: "Hoje, 10:42", theme: "plum", slides: 7 },
-  { id: 2, title: "3 ideias para recomeçar", format: "Stories", brand: "Reinventaia", updated: "Ontem", theme: "sand", slides: 4 },
-  { id: 3, title: "Sua próxima fase começa aqui", format: "Post", brand: "Sala Secreta", updated: "22 out.", theme: "dark", slides: 1 },
+const NAV: { label: Page; icon: typeof LayoutDashboard }[] = [
+  { label: "Início", icon: LayoutDashboard },
+  { label: "Projetos", icon: FolderOpen },
+  { label: "Identidade visual", icon: Palette },
+  { label: "Biblioteca", icon: LibraryBig },
 ];
 
-const formats = [
-  { name: "Carrossel", detail: "Conte uma história em slides", size: "1080 × 1080", icon: Layers3 },
-  { name: "Post", detail: "Uma ideia, uma imagem", size: "1080 × 1080", icon: ImageIcon },
-  { name: "Stories", detail: "Conteúdo vertical", size: "1080 × 1920", icon: BookImage },
-  { name: "Capa de Reels", detail: "Destaque seu vídeo", size: "1080 × 1920", icon: FileImage },
-];
-
-const brandDefaults = [
-  { name: "Ademicon", descriptor: "Consórcios · Institucional", color: "#722B4C", initials: "A", bg: "#F4E8ED" },
-  { name: "Reinventaia", descriptor: "Mentoria · Mulheres 40+", color: "#C67C58", initials: "R", bg: "#F7EDE5" },
-  { name: "Sala Secreta", descriptor: "Produtividade · IA", color: "#222222", initials: "S", bg: "#E9E7E4" },
+const FILTERS: { key: "Todos" | FormatName; label: string }[] = [
+  { key: "Todos", label: "Todos" },
+  { key: "Carrossel", label: "Carrosséis" },
+  { key: "Post", label: "Posts" },
+  { key: "Stories", label: "Stories" },
+  { key: "Capa de Reels", label: "Capas de Reels" },
 ];
 
 export default function Home() {
-  const [active, setActive] = useState("Início");
-  const [projects, setProjects] = useState(initialProjects);
+  const studio = useStudio();
+  const { data } = studio;
+  const [active, setActive] = useState<Page>("Início");
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [showCreate, setShowCreate] = useState(false);
-  const [showBrand, setShowBrand] = useState(false);
-  const [format, setFormat] = useState("Carrossel");
-  const [topic, setTopic] = useState("");
-  const [projectTitle, setProjectTitle] = useState("");
-  const [selectedBrand, setSelectedBrand] = useState("Ademicon");
-  const [slideCount, setSlideCount] = useState("7");
-  const [brandName, setBrandName] = useState("");
-  const [brandColor, setBrandColor] = useState("#722B4C");
-  const [brands, setBrands] = useState(brandDefaults);
-  const [editorProject, setEditorProject] = useState<Project | null>(null);
-  const [editorText, setEditorText] = useState("Sua próxima grande ideia começa aqui.");
-  const [editorSubtext, setEditorSubtext] = useState("Transforme conhecimento em conteúdo que conecta.");
-  const [editorColor, setEditorColor] = useState("#722B4C");
+  const [filter, setFilter] = useState<"Todos" | FormatName>("Todos");
+  const [sort, setSort] = useState<"recentes" | "nome" | "antigos">("recentes");
+  const [create, setCreate] = useState<CreateDefaults | null>(null);
+  const [brandModal, setBrandModal] = useState<Brand | "new" | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [renaming, setRenaming] = useState<Project | null>(null);
   const [notice, setNotice] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
-  const filteredProjects = useMemo(() => projects.filter(p =>
-    `${p.title} ${p.brand} ${p.format}`.toLowerCase().includes(query.toLowerCase())
-  ), [projects, query]);
+  const notify = useCallback((msg: string) => setNotice(msg), []);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 4200);
+    return () => clearTimeout(t);
+  }, [notice]);
 
-  function createProject() {
-    const newProject: Project = {
-      id: Date.now(),
-      title: projectTitle.trim() || topic.trim() || `Novo ${format.toLowerCase()}`,
-      format, brand: selectedBrand, updated: "Agora mesmo",
-      theme: "plum", slides: format === "Post" ? 1 : Number(slideCount)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        if (active === "Editor") setActive("Projetos");
+        setTimeout(() => searchRef.current?.focus(), 0);
+      }
     };
-    setProjects(prev => [newProject, ...prev]);
-    setEditorProject(newProject);
-    setEditorText(topic.trim() || "Sua próxima grande ideia começa aqui.");
-    setEditorSubtext("Transforme conhecimento em conteúdo que conecta.");
-    setEditorColor(brands.find(b => b.name === selectedBrand)?.color || "#722B4C");
-    setShowCreate(false);
-    setActive("Editor");
-    setNotice("Projeto criado. Os dados ficam nesta demonstração enquanto você testa a interface.");
-  }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active]);
 
-  function saveBrand() {
-    if (!brandName.trim()) return;
-    setBrands(prev => [...prev, { name: brandName.trim(), descriptor: "Nova identidade visual", color: brandColor, initials: brandName.trim()[0].toUpperCase(), bg: "#F4F1EE" }]);
-    setBrandName("");
-    setShowBrand(false);
-    setNotice("Identidade adicionada à demonstração.");
-  }
+  const brandOf = useCallback((id: string) => data.brands.find(b => b.id === id) ?? data.brands[0], [data.brands]);
 
-  function navigate(name: string) {
-    setActive(name);
+  const projects = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = data.projects.filter(p => {
+      if (filter !== "Todos" && p.format !== filter) return false;
+      if (!q) return true;
+      return `${p.title} ${brandOf(p.brandId)?.name ?? ""} ${p.format}`.toLowerCase().includes(q);
+    });
+    return [...list].sort((a, b) => sort === "nome" ? a.title.localeCompare(b.title, "pt-BR") : sort === "antigos" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt);
+  }, [data.projects, query, filter, sort, brandOf]);
+
+  const recent = useMemo(() => [...data.projects].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3), [data.projects]);
+  const editing = editingId ? data.projects.find(p => p.id === editingId) ?? null : null;
+
+  function navigate(page: Page) {
+    setActive(page);
     setMobileNav(false);
-    if (name !== "Editor") setEditorProject(null);
+    if (page !== "Editor") setEditingId(null);
+    window.scrollTo({ top: 0 });
   }
 
-  function exportPreview() {
-    const text = `${editorText}\n\n${editorSubtext}\n\n${editorProject?.brand ?? "Minha marca"}`;
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${(editorProject?.title || "conteudo").replace(/[^a-z0-9]/gi, "-").toLowerCase()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setNotice("Texto de prévia exportado. A exportação em PNG/ZIP entra na próxima etapa.");
+  function openProject(p: Project) {
+    setEditingId(p.id);
+    setActive("Editor");
+    setMobileNav(false);
+    window.scrollTo({ top: 0 });
   }
 
-  const navItems = [
-    { label: "Início", icon: LayoutDashboard },
-    { label: "Projetos", icon: FolderOpen },
-    { label: "Identidade visual", icon: Palette },
-    { label: "Biblioteca", icon: LibraryBig },
+  function createProject(p: Project) {
+    studio.upsertProject(p);
+    setCreate(null);
+    openProject(p);
+    notify("Projeto criado. Edite os textos e exporte quando quiser.");
+  }
+
+  function duplicateProject(p: Project) {
+    const copy: Project = { ...p, id: uid("p"), title: `${p.title} (cópia)`, slides: cloneSlides(p.slides), createdAt: Date.now(), updatedAt: Date.now() };
+    studio.upsertProject(copy);
+    notify("Projeto duplicado.");
+  }
+
+  function askDeleteProject(p: Project) {
+    setConfirm({
+      title: "Excluir projeto?",
+      message: `“${p.title}” e seus ${p.slides.length} slide(s) serão apagados. Não dá para desfazer.`,
+      confirmLabel: "Excluir projeto",
+      run: () => {
+        studio.deleteProject(p.id);
+        if (editingId === p.id) navigate("Projetos");
+        notify("Projeto excluído.");
+      },
+    });
+  }
+
+  function applyTemplate(t: Template, brandId?: string) {
+    const now = Date.now();
+    createProject({
+      id: uid("p"), title: t.name, format: t.format, ratio: t.ratio, brandId: brandId ?? data.brands[0].id,
+      slides: cloneSlides(t.slides), caption: "", showNumbers: t.format === "Carrossel", showHandle: true, createdAt: now, updatedAt: now,
+    });
+  }
+
+  async function addImage(img: LibraryImage, blob: Blob) {
+    try {
+      await studio.addImage(img, blob);
+    } catch {
+      notify("Sem espaço para guardar a imagem neste navegador.");
+      throw new Error("Sem espaço para guardar a imagem neste navegador.");
+    }
+  }
+
+  const { upsertProject } = studio;
+  const onEditorChange = useCallback((p: Project) => upsertProject(p), [upsertProject]);
+
+  if (!studio.ready) {
+    return <div className="boot-screen"><div className="boot-mark"><i /><i /><i /></div></div>;
+  }
+
+  const pageTitle = active === "Início" ? "Visão geral" : active === "Editor" ? editing?.title ?? "Editor" : active;
+  const notifications = [
+    data.projects.length === 0 ? "Crie o seu primeiro projeto para começar." : `${data.projects.length} projeto(s) salvos neste navegador.`,
+    data.library.length === 0 ? "Envie fotos na Biblioteca para usar de fundo nos slides." : `${data.library.length} imagem(ns) na sua biblioteca.`,
+    "Conexão com a nuvem: disponível numa próxima etapa.",
   ];
 
   return (
     <main className="app-shell">
       <aside className={`sidebar ${mobileNav ? "sidebar-open" : ""}`}>
         <div className="brand-lockup">
-          <div className="brand-symbol"><Sparkles size={19} strokeWidth={2.3} /></div>
-          <div><div className="brand-name">studio<span>.</span></div><div className="brand-caption">AI CONTENT STUDIO</div></div>
-          <button className="icon-button mobile-close" onClick={() => setMobileNav(false)} aria-label="Fechar menu"><X size={18}/></button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={logo.src} alt="Cardume — organizado por natureza, feito para multiplicar" className="brand-logo" width={900} height={225} />
+          <button className="icon-button mobile-close" onClick={() => setMobileNav(false)} aria-label="Fechar menu"><X size={18} /></button>
         </div>
-        <button className="workspace-switch">
-          <div className="workspace-avatar">K</div>
-          <div className="workspace-copy"><strong>Meu estúdio</strong><span>Espaço pessoal</span></div>
+
+        <button className="workspace-switch" onClick={() => navigate("Configurações")}>
+          <div className="workspace-avatar">{data.settings.studioName.trim()[0]?.toUpperCase() ?? "C"}</div>
+          <div className="workspace-copy"><strong>{data.settings.studioName}</strong><span>Espaço pessoal</span></div>
           <ChevronDown size={15} />
         </button>
+
         <div className="nav-label">WORKSPACE</div>
         <nav className="nav-list">
-          {navItems.map(item => {
+          {NAV.map(item => {
             const Icon = item.icon;
-            return <button key={item.label} className={`nav-item ${active === item.label ? "active" : ""}`} onClick={() => navigate(item.label)}><Icon size={18}/><span>{item.label}</span>{item.label === "Projetos" && <span className="nav-count">{projects.length}</span>}</button>;
+            return (
+              <button key={item.label} className={`nav-item ${active === item.label ? "active" : ""}`} onClick={() => navigate(item.label)}>
+                <Icon size={18} /><span>{item.label}</span>
+                {item.label === "Projetos" && <span className="nav-count">{data.projects.length}</span>}
+                {item.label === "Biblioteca" && data.library.length > 0 && <span className="nav-count">{data.library.length}</span>}
+              </button>
+            );
           })}
         </nav>
         <div className="sidebar-divider" />
         <div className="nav-label">FERRAMENTAS</div>
         <nav className="nav-list">
-          <button className={`nav-item ${active === "Editor" ? "active" : ""}`} onClick={() => { setActive("Editor"); if (!editorProject) setEditorProject(projects[0] || null); }}><SquarePen size={18}/><span>Editor visual</span></button>
-          <button className={`nav-item ${active === "Modelos" ? "active" : ""}`} onClick={() => navigate("Modelos")}><Grid2X2 size={18}/><span>Modelos</span><span className="soon-dot" /></button>
+          <button className={`nav-item ${active === "Editor" ? "active" : ""}`} onClick={() => { const p = editing ?? recent[0]; if (p) openProject(p); else setCreate({}); }}><SquarePen size={18} /><span>Editor visual</span></button>
+          <button className={`nav-item ${active === "Modelos" ? "active" : ""}`} onClick={() => navigate("Modelos")}><LayoutGrid size={18} /><span>Modelos</span><span className="nav-count">{TEMPLATES.length}</span></button>
         </nav>
+
         <div className="sidebar-bottom">
           <div className="usage-card">
-            <div className="usage-top"><span>Seu espaço</span><Activity size={15}/></div>
-            <strong>Fase 1 · Protótipo</strong>
-            <div className="usage-track"><div /></div>
-            <p>Sem consumo de IA nesta etapa.</p>
+            <div className="usage-top"><span>Armazenamento</span><HardDrive size={15} /></div>
+            <strong>Neste navegador</strong>
+            <div className="usage-track"><div style={{ width: `${Math.min(100, 8 + data.projects.length * 4 + data.library.length * 3)}%` }} /></div>
+            <p>{data.projects.length} projetos · {data.library.length} imagens</p>
           </div>
-          <button className="nav-item" onClick={() => setNotice("Configurações serão conectadas nas próximas fases.")}><Settings2 size={18}/><span>Configurações</span></button>
-          <div className="profile-row"><div className="profile-avatar">K</div><div className="profile-info"><strong>Karina</strong><span>Plano pessoal</span></div><MoreHorizontal size={18}/></div>
+          <button className={`nav-item ${active === "Configurações" ? "active" : ""}`} onClick={() => navigate("Configurações")}><Settings2 size={18} /><span>Configurações</span></button>
+          <div className="profile-row">
+            <div className="profile-avatar">{data.settings.userName.trim()[0]?.toUpperCase() ?? "V"}</div>
+            <div className="profile-info"><strong>{data.settings.userName}</strong><span>Plano pessoal</span></div>
+            <button className="icon-button" onClick={() => navigate("Configurações")} aria-label="Perfil"><MoreHorizontal size={18} /></button>
+          </div>
         </div>
       </aside>
 
       {mobileNav && <button className="mobile-backdrop" aria-label="Fechar menu" onClick={() => setMobileNav(false)} />}
+
       <section className="main-panel">
         <header className="topbar">
           <div className="topbar-left">
-            <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="Abrir menu"><Menu size={20}/></button>
-            <div className="breadcrumb">Workspace <span>/</span> <strong>{active === "Início" ? "Visão geral" : active}</strong></div>
+            <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="Abrir menu"><Menu size={20} /></button>
+            <div className="breadcrumb">Workspace <span>/</span> <strong>{pageTitle}</strong></div>
           </div>
           <div className="topbar-actions">
-            <div className="search-box"><Search size={16}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar projetos..." /><kbd>⌘ K</kbd></div>
-            <button className="icon-button notification-button" aria-label="Notificações" onClick={() => setNotice("Você está em dia. Nenhuma notificação nova.")}><Bell size={18}/><i/></button>
-            <div className="top-avatar">K</div>
+            <div className="search-box">
+              <Search size={16} />
+              <input ref={searchRef} value={query} onChange={e => { setQuery(e.target.value); if (active !== "Projetos" && e.target.value) navigate("Projetos"); }} placeholder="Buscar projetos..." aria-label="Buscar projetos" />
+              {query ? <button className="search-clear" onClick={() => setQuery("")} aria-label="Limpar busca"><X size={13} /></button> : <kbd>⌘ K</kbd>}
+            </div>
+            <div className="dropdown">
+              <button className="icon-button notification-button" aria-label="Avisos" onClick={() => setNotifOpen(o => !o)}><Bell size={18} /><i /></button>
+              {notifOpen && <>
+                <button className="dropdown-scrim" aria-label="Fechar" onClick={() => setNotifOpen(false)} />
+                <div className="dropdown-menu notif-menu">
+                  <div className="notif-head">Avisos</div>
+                  {notifications.map(n => <div key={n} className="notif-item"><span />{n}</div>)}
+                </div>
+              </>}
+            </div>
+            <button className="button-primary topbar-create" onClick={() => setCreate({})}><Plus size={16} /> <span>Criar</span></button>
           </div>
         </header>
 
-        {active === "Editor" && editorProject ? (
-          <div className="editor-page">
-            <div className="page-heading editor-heading">
-              <div><div className="eyebrow">EDITOR VISUAL <span>·</span> RASCUNHO</div><h1>{editorProject.title}</h1><p>Edite o conteúdo e veja uma prévia ao vivo.</p></div>
-              <div className="heading-actions"><button className="button-secondary" onClick={() => {setActive("Projetos");setEditorProject(null)}}>Voltar aos projetos</button><button className="button-primary" onClick={exportPreview}><Download size={16}/> Exportar texto</button></div>
-            </div>
-            <div className="editor-layout">
-              <div className="editor-controls">
-                <div className="panel-heading"><span>Conteúdo</span><span className="tiny-pill">EDITÁVEL</span></div>
-                <label className="field-label">Texto principal</label><textarea className="text-field large-text" value={editorText} onChange={e => setEditorText(e.target.value)} rows={4}/>
-                <label className="field-label">Texto de apoio</label><textarea className="text-field" value={editorSubtext} onChange={e => setEditorSubtext(e.target.value)} rows={3}/>
-                <label className="field-label">Cor de destaque</label><div className="color-picker-row"><input type="color" value={editorColor} onChange={e => setEditorColor(e.target.value)}/><code>{editorColor.toUpperCase()}</code></div>
-                <div className="control-divider"/>
-                <div className="panel-heading"><span>Elementos</span><span className="subtle-text">Prévia inicial</span></div>
-                <div className="element-row"><Type size={17}/><span>Texto principal</span><Check size={15} className="element-check"/></div>
-                <div className="element-row"><Shapes size={17}/><span>Forma decorativa</span><span className="element-muted">Fundo</span></div>
-                <div className="element-row"><ImageIcon size={17}/><span>Imagem de fundo</span><span className="element-muted">Demo</span></div>
-                <div className="editor-note"><Sparkles size={16}/><p>Esta é a base do editor. Camadas avançadas, arrastar elementos e exportação de imagens entram na Fase 2.</p></div>
-              </div>
-              <div className="canvas-area">
-                <div className="canvas-toolbar"><span><span className="status-dot"/> Salvo nesta sessão</span><div><button className="canvas-tool" title="Desfazer indisponível na Fase 1"><Command size={15}/></button><span>100%</span><button className="canvas-tool" onClick={() => setNotice("Zoom avançado entra na Fase 2.")}><Plus size={15}/></button></div></div>
-                <div className="canvas-stage"><div className={`design-canvas ${editorProject.format === "Stories" || editorProject.format === "Capa de Reels" ? "portrait-canvas" : ""}`} style={{backgroundColor: editorColor}}>
-                  <div className="canvas-orb orb-one"/><div className="canvas-orb orb-two"/>
-                  <div className="canvas-brand">{editorProject.brand}<span>®</span></div>
-                  <div className="canvas-content"><div className="canvas-kicker">UMA NOVA PERSPECTIVA</div><h2>{editorText}</h2><p>{editorSubtext}</p><div className="canvas-cta">DESCUBRA MAIS <ArrowRight size={14}/></div></div>
-                  <div className="canvas-footer"><span>IDEIAS QUE MOVEM</span><span>01 / {String(editorProject.slides).padStart(2,"0")}</span></div>
-                </div></div>
-                <div className="canvas-footerbar"><span>{editorProject.format} · {editorProject.format === "Stories" || editorProject.format === "Capa de Reels" ? "1080 × 1920" : "1080 × 1080"}</span><span>Prévia de demonstração</span></div>
-              </div>
-            </div>
-          </div>
+        {active === "Editor" && editing ? (
+          <Editor key={editing.id} project={editing} brands={data.brands} library={data.library} saveState={studio.saveState}
+            onChange={onEditorChange} onBack={() => navigate("Projetos")} onAddImage={addImage} notify={notify} />
         ) : active === "Identidade visual" ? (
           <div className="page-content">
-            <div className="page-heading"><div><div className="eyebrow">SISTEMA DE MARCA</div><h1>Identidade visual</h1><p>Organize as marcas e mantenha cada conteúdo consistente.</p></div><button className="button-primary" onClick={() => setShowBrand(true)}><Plus size={17}/> Nova marca</button></div>
-            <div className="brand-grid">{brands.map((b, i) => <div className="brand-card" key={`${b.name}-${i}`}><div className="brand-card-top"><div className="brand-mark" style={{background:b.bg,color:b.color}}>{b.initials}</div><button className="icon-button" onClick={() => setNotice(`Marca ${b.name}: edição completa será habilitada na próxima iteração.`)}><MoreHorizontal size={18}/></button></div><h3>{b.name}</h3><p>{b.descriptor}</p><div className="brand-color-row"><span className="swatch" style={{background:b.color}}/><code>{b.color.toUpperCase()}</code><span className="brand-color-label">Cor principal</span></div><button className="brand-open" onClick={() => {setSelectedBrand(b.name);setShowCreate(true)}}>Criar conteúdo com esta marca <ArrowRight size={15}/></button></div>)}
-              <button className="brand-add-card" onClick={() => setShowBrand(true)}><div><Plus size={22}/></div><strong>Adicionar identidade</strong><span>Configure cores, logo e tipografia</span></button></div>
+            <div className="page-heading">
+              <div><div className="eyebrow"><span className="eyebrow-dot" /> SISTEMA DE MARCA</div><h1>Identidade visual</h1><p>Cores, fonte e logo de cada marca. Todo conteúdo criado segue a marca escolhida.</p></div>
+              <button className="button-primary" onClick={() => setBrandModal("new")}><Plus size={17} /> Nova marca</button>
+            </div>
+            <div className="brand-grid">
+              {data.brands.map(b => {
+                const count = data.projects.filter(p => p.brandId === b.id).length;
+                return (
+                  <div className="brand-card" key={b.id}>
+                    <div className="brand-card-top">
+                      <div className="brand-mark" style={{ background: b.dark, color: b.light }}>
+                        {b.logo ? <StoredImage id={b.logo} alt={b.name} /> : <span style={{ fontFamily: `"${FONTS[b.font].family}"` }}>{b.name[0]}</span>}
+                      </div>
+                      <button className="icon-button" onClick={() => setBrandModal(b)} aria-label={`Editar ${b.name}`}><Pencil size={16} /></button>
+                    </div>
+                    <h3>{b.name}</h3>
+                    <p>{b.descriptor}{b.handle && <> · <span className="handle">{b.handle}</span></>}</p>
+                    <div className="brand-palette">
+                      {[b.primary, b.secondary, b.dark, b.light].map((c, i) => <span key={i} style={{ background: c }} title={c} />)}
+                    </div>
+                    <div className="brand-color-row"><code>{b.primary}</code><span className="brand-color-label">{count} projeto(s)</span></div>
+                    <button className="brand-open" onClick={() => setCreate({ brandId: b.id })}>Criar conteúdo com esta marca <ArrowRight size={15} /></button>
+                  </div>
+                );
+              })}
+              <NewBrandButton onClick={() => setBrandModal("new")} />
+            </div>
           </div>
         ) : active === "Projetos" ? (
           <div className="page-content">
-            <div className="page-heading"><div><div className="eyebrow">SEU CONTEÚDO</div><h1>Projetos</h1><p>Todos os seus rascunhos em um só lugar.</p></div><button className="button-primary" onClick={() => setShowCreate(true)}><Plus size={17}/> Novo projeto</button></div>
-            <div className="filter-row"><div className="filter-chip active">Todos <span>{filteredProjects.length}</span></div><div className="filter-chip">Carrosséis</div><div className="filter-chip">Posts</div><div className="filter-chip">Stories</div><div className="filter-spacer"/><button className="sort-button">Mais recentes <ChevronDown size={15}/></button></div>
-            <div className="projects-grid">{filteredProjects.map(p => <ProjectCard key={p.id} project={p} onOpen={() => {setEditorProject(p);setEditorText(p.title);setEditorSubtext("Transforme conhecimento em conteúdo que conecta.");setEditorColor(brands.find(b=>b.name===p.brand)?.color || "#722B4C");setActive("Editor")}} />)}<button className="new-project-card" onClick={() => setShowCreate(true)}><span><Plus size={23}/></span><strong>Criar novo projeto</strong><small>Comece com uma tela em branco</small></button></div>
+            <div className="page-heading">
+              <div><div className="eyebrow"><span className="eyebrow-dot" /> SEU CONTEÚDO</div><h1>Projetos</h1><p>Todos os seus rascunhos em um só lugar.</p></div>
+              <button className="button-primary" onClick={() => setCreate({})}><Plus size={17} /> Novo projeto</button>
+            </div>
+            <div className="filter-row">
+              {FILTERS.map(f => {
+                const n = f.key === "Todos" ? data.projects.length : data.projects.filter(p => p.format === f.key).length;
+                return <button key={f.key} className={`filter-chip ${filter === f.key ? "active" : ""}`} onClick={() => setFilter(f.key)}>{f.label} <span>{n}</span></button>;
+              })}
+              <div className="filter-spacer" />
+              <label className="sort-button">
+                <select value={sort} onChange={e => setSort(e.target.value as typeof sort)} aria-label="Ordenar">
+                  <option value="recentes">Mais recentes</option>
+                  <option value="antigos">Mais antigos</option>
+                  <option value="nome">Nome (A–Z)</option>
+                </select>
+                <ChevronDown size={15} />
+              </label>
+            </div>
+            {query && <p className="search-note">{projects.length} resultado(s) para “{query}” <button className="text-button" onClick={() => setQuery("")}>Limpar</button></p>}
+            {projects.length ? (
+              <div className="projects-grid">
+                {projects.map(p => <ProjectCard key={p.id} project={p} brand={brandOf(p.brandId)} onOpen={() => openProject(p)} onDuplicate={() => duplicateProject(p)} onDelete={() => askDeleteProject(p)} onRename={() => setRenaming(p)} />)}
+                <button className="new-project-card" onClick={() => setCreate({})}><span><Plus size={23} /></span><strong>Criar novo projeto</strong><small>Carrossel, post, stories ou capa</small></button>
+              </div>
+            ) : (
+              <EmptyState title={query || filter !== "Todos" ? "Nada encontrado" : "Nenhum projeto ainda"} text={query || filter !== "Todos" ? "Tente outra busca ou outro filtro." : "Crie o primeiro conteúdo ou comece por um modelo."}
+                action={query || filter !== "Todos" ? <button className="button-secondary" onClick={() => { setQuery(""); setFilter("Todos"); }}>Limpar filtros</button> : <button className="button-primary" onClick={() => setCreate({})}><Plus size={16} /> Novo projeto</button>} />
+            )}
           </div>
-        ) : active === "Biblioteca" || active === "Modelos" ? (
-          <div className="page-content">
-            <div className="page-heading"><div><div className="eyebrow">PONTO DE PARTIDA</div><h1>{active === "Biblioteca" ? "Biblioteca" : "Modelos"}</h1><p>Modelos iniciais para acelerar a criação sem começar do zero.</p></div></div>
-            <div className="template-grid">{["Editorial minimalista","Destaque de campanha","Dica em 3 passos","Capa de conteúdo"].map((t,i)=><button className="template-card" key={t} onClick={() => {setFormat(i===2?"Carrossel":i===3?"Capa de Reels":"Post");setProjectTitle(t);setTopic("");setShowCreate(true)}}><div className={`template-art art-${i}`}><span>{["IDEIA EM FOCO","NOVA CAMPANHA","3 PASSOS","ASSISTA AGORA"][i]}</span><b>{["Menos ruído.\nMais intenção.","Sua marca,\nmais forte.","Pequenas ações.\nGrandes mudanças.","O que você\nprecisa saber."][i]}</b><i/></div><div className="template-meta"><strong>{t}</strong><span>{["Post quadrado","Post quadrado","Carrossel","Capa vertical"][i]}</span></div></button>)}</div>
-          </div>
+        ) : active === "Biblioteca" ? (
+          <LibraryPage library={data.library} onAdd={addImage} notify={notify}
+            onDelete={img => setConfirm({ title: "Excluir imagem?", message: `“${img.name}” sai da biblioteca e dos slides e logos que a usam.`, confirmLabel: "Excluir imagem", run: () => { studio.deleteImage(img.id); notify("Imagem excluída."); } })} />
+        ) : active === "Modelos" ? (
+          <TemplatesPage brands={data.brands} onUse={applyTemplate} />
+        ) : active === "Configurações" ? (
+          <SettingsPage data={data} onChange={studio.updateSettings} notify={notify}
+            onExport={() => { downloadBlob(new Blob([studio.exportBackup()], { type: "application/json" }), "cardume-backup.json"); notify("Cópia de segurança baixada."); }}
+            onReset={() => setConfirm({ title: "Apagar tudo?", message: "Projetos, marcas, imagens e preferências deste navegador serão apagados e o estúdio volta aos exemplos.", confirmLabel: "Apagar tudo", run: () => { studio.resetAll(); notify("Estúdio restaurado com os exemplos."); } })} />
         ) : (
           <div className="page-content">
-            <div className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-dot"/> SEU ESTÚDIO CRIATIVO</div><h1>Transforme ideias<br/>em <span>conteúdo memorável.</span></h1><p>Planeje, crie e organize seu conteúdo visual em um só lugar.</p><div className="welcome-actions"><button className="button-primary large-button" onClick={() => setShowCreate(true)}><WandSparkles size={17}/> Criar conteúdo <ArrowRight size={16}/></button><button className="button-secondary large-button" onClick={() => navigate("Identidade visual")}>Configurar marca</button></div></div><div className="hero-art"><div className="hero-orbit orbit-a"/><div className="hero-orbit orbit-b"/><div className="hero-sheet sheet-back"><div/><div/><div/></div><div className="hero-sheet sheet-front"><span>IDEIAS QUE CONECTAM</span><strong>O próximo<br/>capítulo começa<br/><em>agora.</em></strong><i/><small>SEU CONTEÚDO. SUA VOZ.</small></div><div className="hero-floating floating-spark"><Sparkles size={19}/></div><div className="hero-floating floating-check"><Check size={17}/></div><div className="hero-floating floating-type"><Type size={18}/></div></div></div>
-            <div className="section-heading"><div><h2>Comece por aqui</h2><p>Escolha o formato ideal para sua ideia.</p></div><button className="text-button" onClick={() => setShowCreate(true)}>Ver todos os formatos <ArrowRight size={15}/></button></div>
-            <div className="format-grid">{formats.map(f=>{const Icon=f.icon;return <button className="format-card" key={f.name} onClick={()=>{setFormat(f.name);setProjectTitle("");setShowCreate(true)}}><div className={`format-icon format-${f.name.toLowerCase().replaceAll(" ","-")}`}><Icon size={20}/></div><div className="format-copy"><strong>{f.name}</strong><span>{f.detail}</span><small>{f.size}</small></div><ArrowDownRight size={17} className="format-arrow"/></button>})}</div>
-            <div className="section-heading recent-heading"><div><h2>Projetos recentes</h2><p>Suas últimas ideias, prontas para continuar.</p></div><button className="text-button" onClick={() => navigate("Projetos")}>Ver todos <ArrowRight size={15}/></button></div>
-            <div className="projects-grid">{filteredProjects.slice(0,3).map(p=><ProjectCard key={p.id} project={p} onOpen={()=>{setEditorProject(p);setEditorText(p.title);setEditorSubtext("Transforme conhecimento em conteúdo que conecta.");setEditorColor(brands.find(b=>b.name===p.brand)?.color || "#722B4C");setActive("Editor")}} />)}<button className="new-project-card" onClick={() => setShowCreate(true)}><span><Plus size={23}/></span><strong>Nova ideia</strong><small>Comece do zero</small></button></div>
-            <div className="phase-banner"><div className="phase-icon"><Sparkles size={18}/></div><div><strong>Seu estúdio está tomando forma.</strong><p>Esta é a primeira etapa: interface, marcas e fluxo de projetos. Salvamento em nuvem, IA e exportação de imagens serão adicionados nas próximas fases.</p></div><span className="phase-status">FASE 1 DE 4</span></div>
+            <div className="welcome-row">
+              <div>
+                <div className="eyebrow"><span className="eyebrow-dot" /> OLÁ, {data.settings.userName.toUpperCase()}</div>
+                <h1>Ideias organizadas,<br /><span>conteúdo que multiplica.</span></h1>
+                <p>Crie carrosséis, posts e stories com a identidade da sua marca, em minutos.</p>
+                <div className="welcome-actions">
+                  <button className="button-primary large-button" onClick={() => setCreate({})}><WandSparkles size={17} /> Criar conteúdo <ArrowRight size={16} /></button>
+                  <button className="button-secondary large-button" onClick={() => navigate("Modelos")}>Ver modelos</button>
+                </div>
+                <div className="hero-stats">
+                  <div><strong>{data.projects.length}</strong><span>projetos</span></div>
+                  <div><strong>{data.projects.reduce((s, p) => s + p.slides.length, 0)}</strong><span>slides</span></div>
+                  <div><strong>{data.brands.length}</strong><span>marcas</span></div>
+                </div>
+              </div>
+              <div className="hero-art" aria-hidden="true">
+                {recent[0] && <div className="hero-card hero-card-back"><SlideCanvas slide={recent[0].slides[Math.min(1, recent[0].slides.length - 1)]} brand={brandOf(recent[0].brandId)} ratio="4:5" index={1} total={recent[0].slides.length} showNumbers showHandle isCarousel quality={360} className="hero-canvas" /></div>}
+                {recent[0] && <div className="hero-card hero-card-front"><SlideCanvas slide={recent[0].slides[0]} brand={brandOf(recent[0].brandId)} ratio="4:5" index={0} total={recent[0].slides.length} showNumbers showHandle isCarousel quality={420} className="hero-canvas" /></div>}
+                <div className="hero-flock">{Array.from({ length: 14 }).map((_, i) => <i key={i} style={{ "--i": i } as React.CSSProperties} />)}</div>
+              </div>
+            </div>
+
+            <div className="section-heading">
+              <div><h2>Comece por aqui</h2><p>Escolha o formato ideal para sua ideia.</p></div>
+              <button className="text-button" onClick={() => navigate("Modelos")}>Ver modelos prontos <ArrowRight size={15} /></button>
+            </div>
+            <div className="format-grid">
+              {FORMATS.map(f => {
+                const Icon = FORMAT_ICONS[f.name];
+                return (
+                  <button className="format-card" key={f.name} onClick={() => setCreate({ format: f.name })}>
+                    <div className={`format-icon format-${f.name.toLowerCase().replaceAll(" ", "-")}`}><Icon size={20} /></div>
+                    <div className="format-copy"><strong>{f.name}</strong><span>{f.detail}</span><small>{f.ratios.map(r => RATIO_SIZE[r].label).join(" · ")}</small></div>
+                    <ArrowDownRight size={17} className="format-arrow" />
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="section-heading recent-heading">
+              <div><h2>Projetos recentes</h2><p>Suas últimas ideias, prontas para continuar.</p></div>
+              <button className="text-button" onClick={() => navigate("Projetos")}>Ver todos <ArrowRight size={15} /></button>
+            </div>
+            <div className="projects-grid">
+              {recent.map(p => <ProjectCard key={p.id} project={p} brand={brandOf(p.brandId)} onOpen={() => openProject(p)} onDuplicate={() => duplicateProject(p)} onDelete={() => askDeleteProject(p)} onRename={() => setRenaming(p)} />)}
+              <button className="new-project-card" onClick={() => setCreate({})}><span><Plus size={23} /></span><strong>Nova ideia</strong><small>Comece do zero</small></button>
+            </div>
+
+            <div className="phase-banner">
+              <div className="phase-icon"><Cloud size={18} /></div>
+              <div><strong>Seus dados ficam neste navegador.</strong><p>Tudo é salvo automaticamente aqui. A sincronização na nuvem, o login e a escrita por IA entram nas próximas etapas.</p></div>
+              <button className="text-button" onClick={() => navigate("Configurações")}>Fazer cópia <ArrowRight size={14} /></button>
+            </div>
           </div>
         )}
-        <footer className="app-footer"><span>studio. <i>·</i> AI Content Studio</span><span>Protótipo de desenvolvimento <span className="footer-dot"/> Fase 1</span></footer>
+
+        {active !== "Editor" && <footer className="app-footer"><span>cardume <i>·</i> organizado por natureza, feito para multiplicar</span><span>Salvo neste navegador <span className="footer-dot" /></span></footer>}
       </section>
 
-      {showCreate && <div className="modal-backdrop" onMouseDown={e => {if(e.target===e.currentTarget)setShowCreate(false)}}><div className="modal create-modal"><div className="modal-header"><div><div className="eyebrow">NOVO PROJETO</div><h2>Vamos criar algo bom.</h2><p>Defina o ponto de partida. Você poderá ajustar depois.</p></div><button className="icon-button" onClick={() => setShowCreate(false)} aria-label="Fechar"><X size={19}/></button></div><div className="modal-body"><label className="field-label">Formato</label><div className="format-select-grid">{formats.map(f=>{const Icon=f.icon;return <button key={f.name} className={`format-option ${format===f.name?"selected":""}`} onClick={()=>setFormat(f.name)}><Icon size={19}/><strong>{f.name}</strong><small>{f.size}</small>{format===f.name&&<Check size={14} className="option-check"/>}</button>})}</div><label className="field-label">Nome do projeto <span className="optional">· opcional</span></label><input className="text-field" value={projectTitle} onChange={e=>setProjectTitle(e.target.value)} placeholder="Ex.: 5 motivos para começar agora"/><label className="field-label">Sobre o que será o conteúdo?</label><textarea className="text-field" value={topic} onChange={e=>setTopic(e.target.value)} placeholder="Descreva a ideia em uma frase..." rows={3}/><div className="form-two-col"><div><label className="field-label">Identidade visual</label><select className="text-field" value={selectedBrand} onChange={e=>setSelectedBrand(e.target.value)}>{brands.map(b=><option key={b.name}>{b.name}</option>)}</select></div>{format==="Carrossel"&&<div><label className="field-label">Quantidade de slides</label><select className="text-field" value={slideCount} onChange={e=>setSlideCount(e.target.value)}>{["4","5","6","7","8","10"].map(n=><option key={n} value={n}>{n} slides</option>)}</select></div>}</div><div className="modal-hint"><Sparkles size={16}/><span>A geração por IA será conectada na Fase 3. Por enquanto, você pode testar o fluxo e o editor sem custo de API.</span></div></div><div className="modal-footer"><button className="button-secondary" onClick={()=>setShowCreate(false)}>Cancelar</button><button className="button-primary" onClick={createProject}>Criar projeto <ArrowRight size={16}/></button></div></div></div>}
+      {create && <CreateProjectModal brands={data.brands} defaults={create} defaultRatio={data.settings.defaultRatio} onClose={() => setCreate(null)} onCreate={createProject} />}
 
-      {showBrand && <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setShowBrand(false)}}><div className="modal brand-modal"><div className="modal-header"><div><div className="eyebrow">IDENTIDADE VISUAL</div><h2>Adicionar marca</h2><p>Comece com o nome e uma cor principal.</p></div><button className="icon-button" onClick={()=>setShowBrand(false)} aria-label="Fechar"><X size={19}/></button></div><div className="modal-body"><label className="field-label">Nome da marca</label><input className="text-field" value={brandName} onChange={e=>setBrandName(e.target.value)} placeholder="Ex.: Minha marca"/><label className="field-label">Cor principal</label><div className="color-picker-row large"><input type="color" value={brandColor} onChange={e=>setBrandColor(e.target.value)}/><code>{brandColor.toUpperCase()}</code><span className="color-preview" style={{background:brandColor}}/></div><div className="modal-hint"><Palette size={16}/><span>Na próxima etapa, você poderá cadastrar logotipo, tipografia e mais cores.</span></div></div><div className="modal-footer"><button className="button-secondary" onClick={()=>setShowBrand(false)}>Cancelar</button><button className="button-primary" onClick={saveBrand}>Adicionar marca <Plus size={16}/></button></div></div></div>}
+      {brandModal && (
+        <BrandModal brand={brandModal === "new" ? null : brandModal} library={data.library} onClose={() => setBrandModal(null)} onAddImage={addImage} canDelete={data.brands.length > 1}
+          onSave={b => { studio.upsertBrand(b); setBrandModal(null); notify(brandModal === "new" ? "Marca criada." : "Marca atualizada."); }}
+          onDelete={brandModal !== "new" ? () => {
+            const b = brandModal;
+            const n = data.projects.filter(p => p.brandId === b.id).length;
+            setBrandModal(null);
+            setConfirm({ title: "Excluir marca?", message: n ? `${n} projeto(s) usam “${b.name}” e passarão para outra marca.` : `“${b.name}” será excluída.`, confirmLabel: "Excluir marca", run: () => { studio.deleteBrand(b.id); notify("Marca excluída."); } });
+          } : undefined} />
+      )}
 
-      {notice && <div className="toast"><Check size={17}/><span>{notice}</span><button onClick={()=>setNotice("")} aria-label="Fechar aviso"><X size={15}/></button></div>}
+      {renaming && <RenameModal project={renaming} onClose={() => setRenaming(null)} onSave={title => { studio.upsertProject({ ...renaming, title }); setRenaming(null); notify("Nome atualizado."); }} />}
+
+      {confirm && <ConfirmModal title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} onCancel={() => setConfirm(null)} onConfirm={() => { confirm.run(); setConfirm(null); }} />}
+
+      {notice && <div className="toast" role="status"><Check size={17} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Fechar aviso"><X size={15} /></button></div>}
     </main>
   );
 }
 
-function ProjectCard({project, onOpen}:{project:Project;onOpen:()=>void}) {
-  return <div className="project-card"><button className="project-preview-button" onClick={onOpen} aria-label={`Abrir ${project.title}`}><div className={`project-preview preview-${project.theme}`}><div className="preview-noise"/><div className="preview-label">{project.brand.toUpperCase()}</div><div className="preview-title">{project.title}</div><div className="preview-line"/><div className="preview-page">01 / {String(project.slides).padStart(2,"0")}</div><div className="preview-shape"/></div></button><div className="project-info"><div><strong>{project.title}</strong><span>{project.brand} <i>·</i> {project.format}</span></div><button className="icon-button project-more" onClick={onOpen} aria-label="Abrir projeto"><MoreHorizontal size={18}/></button></div><div className="project-meta"><span><Clock3 size={13}/>{project.updated}</span><button onClick={onOpen}>Editar <ArrowRight size={13}/></button></div></div>;
+function ProjectCard({ project, brand, onOpen, onDuplicate, onDelete, onRename }: { project: Project; brand: Brand; onOpen: () => void; onDuplicate: () => void; onDelete: () => void; onRename: () => void }) {
+  const [menu, setMenu] = useState(false);
+  const first = project.slides[0];
+  return (
+    <div className="project-card">
+      <button className="project-preview-button" onClick={onOpen} aria-label={`Abrir ${project.title}`}>
+        <div className={`project-preview ratio-${project.ratio.replace(":", "x")}`}>
+          {first && <SlideCanvas slide={first} brand={brand} ratio={project.ratio} index={0} total={project.slides.length} showNumbers={project.showNumbers} showHandle={project.showHandle} isCarousel={project.slides.length > 1} quality={360} className="preview-canvas" />}
+          {project.slides.length > 1 && <span className="slide-badge">{project.slides.length} slides</span>}
+        </div>
+      </button>
+      <div className="project-info">
+        <div><strong>{project.title}</strong><span>{brand.name} <i>·</i> {project.format}</span></div>
+        <div className="dropdown">
+          <button className="icon-button project-more" onClick={() => setMenu(m => !m)} aria-label="Opções do projeto" aria-expanded={menu}><MoreHorizontal size={18} /></button>
+          {menu && <>
+            <button className="dropdown-scrim" aria-label="Fechar" onClick={() => setMenu(false)} />
+            <div className="dropdown-menu small">
+              <button onClick={() => { setMenu(false); onOpen(); }}><SquarePen size={15} /> Abrir no editor</button>
+              <button onClick={() => { setMenu(false); onRename(); }}><Pencil size={15} /> Renomear</button>
+              <button onClick={() => { setMenu(false); onDuplicate(); }}><Copy size={15} /> Duplicar</button>
+              <button className="danger" onClick={() => { setMenu(false); onDelete(); }}><Trash2 size={15} /> Excluir</button>
+            </div>
+          </>}
+        </div>
+      </div>
+      <div className="project-meta"><span>{timeAgo(project.updatedAt)}</span><button onClick={onOpen}>Editar <ArrowRight size={13} /></button></div>
+    </div>
+  );
+}
+
+function RenameModal({ project, onClose, onSave }: { project: Project; onClose: () => void; onSave: (t: string) => void }) {
+  const [title, setTitle] = useState(project.title);
+  const submit = () => title.trim() && onSave(title.trim());
+  return (
+    <Modal title="Renomear projeto" onClose={onClose} size="sm"
+      footer={<><button className="button-secondary" onClick={onClose}>Cancelar</button><button className="button-primary" onClick={submit} disabled={!title.trim()}>Salvar</button></>}>
+      <label className="field-label" htmlFor="r-title">Nome</label>
+      <input id="r-title" className="text-field" value={title} onChange={e => setTitle(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} maxLength={80} autoFocus />
+    </Modal>
+  );
+}
+
+function EmptyState({ title, text, action }: { title: string; text: string; action: React.ReactNode }) {
+  return (
+    <div className="empty-state">
+      <div className="empty-flock">{Array.from({ length: 6 }).map((_, i) => <i key={i} />)}</div>
+      <strong>{title}</strong><p>{text}</p>{action}
+    </div>
+  );
+}
+
+function LibraryPage({ library, onAdd, onDelete, notify }: { library: LibraryImage[]; onAdd: (img: LibraryImage, blob: Blob) => Promise<void>; onDelete: (img: LibraryImage) => void; notify: (m: string) => void }) {
+  const [busy, setBusy] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function upload(files: FileList | File[] | null) {
+    const list = Array.from(files ?? []).filter(f => f.type.startsWith("image/"));
+    if (!list.length) return notify("Escolha arquivos de imagem (JPG, PNG ou WebP).");
+    setBusy(list.length);
+    let ok = 0;
+    for (const file of list) {
+      if (file.size > 15 * 1024 * 1024) { notify(`${file.name} passa de 15 MB e foi ignorada.`); setBusy(b => b - 1); continue; }
+      try {
+        const { blob, width, height } = await prepareUpload(file);
+        await onAdd({ id: uid("img"), name: file.name.replace(/\.[^.]+$/, ""), width, height, size: blob.size, createdAt: Date.now() }, blob);
+        ok++;
+      } catch { /* aviso já mostrado */ }
+      setBusy(b => b - 1);
+    }
+    if (ok) notify(ok === 1 ? "Imagem adicionada." : `${ok} imagens adicionadas.`);
+  }
+
+  return (
+    <div className="page-content">
+      <div className="page-heading">
+        <div><div className="eyebrow"><span className="eyebrow-dot" /> SEUS ARQUIVOS</div><h1>Biblioteca</h1><p>Fotos e logos para usar de fundo nos slides e nas marcas.</p></div>
+        <button className="button-primary" onClick={() => fileRef.current?.click()} disabled={busy > 0}><Upload size={17} /> {busy ? `Enviando ${busy}…` : "Enviar imagens"}</button>
+        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={e => { upload(e.target.files); e.target.value = ""; }} />
+      </div>
+      <div className={`dropzone ${dragging ? "dragging" : ""}`}
+        onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)}
+        onDrop={e => { e.preventDefault(); setDragging(false); upload(e.dataTransfer.files); }}
+        onClick={() => fileRef.current?.click()} role="button" tabIndex={0} onKeyDown={e => e.key === "Enter" && fileRef.current?.click()}>
+        <ImagePlus size={22} /><strong>Arraste imagens para cá</strong><span>ou clique para escolher · JPG, PNG ou WebP até 15 MB</span>
+      </div>
+      {library.length ? (
+        <div className="library-grid">
+          {library.map(img => (
+            <div className="library-card" key={img.id}>
+              <div className="library-thumb"><StoredImage id={img.id} alt={img.name} /></div>
+              <div className="library-info">
+                <div><strong title={img.name}>{img.name}</strong><span>{img.width} × {img.height} · {formatBytes(img.size)}</span></div>
+                <button className="icon-button" onClick={() => onDelete(img)} aria-label={`Excluir ${img.name}`}><Trash2 size={15} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="library-empty">Nenhuma imagem ainda. As que você enviar ficam guardadas neste navegador.</p>
+      )}
+    </div>
+  );
+}
+
+function TemplatesPage({ brands, onUse }: { brands: Brand[]; onUse: (t: Template, brandId: string) => void }) {
+  const [brandId, setBrandId] = useState(brands[0]?.id ?? "");
+  const [format, setFormat] = useState<"Todos" | FormatName>("Todos");
+  const brand = brands.find(b => b.id === brandId) ?? brands[0];
+  const list = TEMPLATES.filter(t => format === "Todos" || t.format === format);
+  return (
+    <div className="page-content">
+      <div className="page-heading">
+        <div><div className="eyebrow"><span className="eyebrow-dot" /> PONTO DE PARTIDA</div><h1>Modelos</h1><p>Estruturas prontas que já saem com as cores da sua marca.</p></div>
+        <label className="brand-picker">
+          <span>Ver com a marca</span>
+          <select value={brandId} onChange={e => setBrandId(e.target.value)}>{brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
+          <ChevronDown size={15} />
+        </label>
+      </div>
+      <div className="filter-row">
+        {FILTERS.map(f => <button key={f.key} className={`filter-chip ${format === f.key ? "active" : ""}`} onClick={() => setFormat(f.key)}>{f.label}</button>)}
+      </div>
+      <div className="template-grid">
+        {list.map(t => {
+          const slides = cloneSlides(t.slides);
+          return (
+            <button className="template-card" key={t.id} onClick={() => onUse(t, brand.id)}>
+              <div className={`template-art ratio-${t.ratio.replace(":", "x")}`}>
+                <SlideCanvas slide={slides[0]} brand={brand} ratio={t.ratio} index={0} total={slides.length} showNumbers={t.format === "Carrossel"} showHandle isCarousel={slides.length > 1} quality={360} className="preview-canvas" />
+                <span className="template-use">Usar modelo <ArrowRight size={14} /></span>
+              </div>
+              <div className="template-meta"><strong>{t.name}</strong><span>{t.format} · {slides.length > 1 ? `${slides.length} slides` : RATIO_SIZE[t.ratio].label}</span><small>{t.description}</small></div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage({ data, onChange, onExport, onReset, notify }: { data: StudioData; onChange: (p: Partial<StudioData["settings"]>) => void; onExport: () => void; onReset: () => void; notify: (m: string) => void }) {
+  const s = data.settings;
+  return (
+    <div className="page-content narrow">
+      <div className="page-heading">
+        <div><div className="eyebrow"><span className="eyebrow-dot" /> PREFERÊNCIAS</div><h1>Configurações</h1><p>Seu perfil, os padrões dos novos projetos e seus dados.</p></div>
+      </div>
+
+      <section className="settings-card">
+        <h3>Perfil</h3>
+        <div className="form-two-col">
+          <div><label className="field-label" htmlFor="s-name">Seu nome</label><input id="s-name" className="text-field" value={s.userName} maxLength={40} onChange={e => onChange({ userName: e.target.value })} onBlur={() => !s.userName.trim() && onChange({ userName: "Você" })} /></div>
+          <div><label className="field-label" htmlFor="s-studio">Nome do estúdio</label><input id="s-studio" className="text-field" value={s.studioName} maxLength={40} onChange={e => onChange({ studioName: e.target.value })} onBlur={() => !s.studioName.trim() && onChange({ studioName: "Meu estúdio" })} /></div>
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <h3>Padrões de novos projetos</h3>
+        <label className="field-label">Proporção de carrosséis e posts</label>
+        <Segmented label="Proporção padrão" value={s.defaultRatio} onChange={v => { onChange({ defaultRatio: v }); notify("Padrão atualizado."); }} options={[{ key: "4:5", label: "Retrato 4:5" }, { key: "1:1", label: "Quadrado 1:1" }]} />
+        <div className="settings-toggles">
+          <Toggle checked={s.showNumbers} onChange={v => onChange({ showNumbers: v })} label="Numeração dos slides" hint="Mostra 01 / 05 no canto dos carrosséis" />
+          <Toggle checked={s.showHandle} onChange={v => onChange({ showHandle: v })} label="Mostrar @ da marca" hint="No rodapé de cada slide" />
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <h3>Seus dados</h3>
+        <p className="settings-text">Tudo fica salvo neste navegador: {data.projects.length} projetos, {data.brands.length} marcas e {data.library.length} imagens. Se limpar os dados do navegador, eles somem — faça cópias de vez em quando.</p>
+        <div className="settings-actions">
+          <button className="button-secondary" onClick={onExport}><FileJson size={16} /> Baixar cópia de segurança</button>
+          <button className="button-danger-ghost" onClick={onReset}><RotateCcw size={15} /> Apagar tudo e recomeçar</button>
+        </div>
+      </section>
+
+      <section className="settings-card connect-card">
+        <div className="connect-icon"><Cloud size={20} /></div>
+        <div>
+          <h3>Nuvem e login <span className="tag-soon">EM BREVE</span></h3>
+          <p className="settings-text">Na próxima etapa, os projetos e imagens passam a ser salvos na nuvem, com login e acesso de qualquer aparelho.</p>
+        </div>
+      </section>
+    </div>
+  );
 }
