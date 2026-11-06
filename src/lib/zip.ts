@@ -26,7 +26,7 @@ export async function makeZip(files: { name: string; blob: Blob }[]): Promise<Bl
   const encoder = new TextEncoder();
   const { time, date } = dosDateTime(new Date());
   const parts: BlobPart[] = [];
-  const central: Uint8Array[] = [];
+  const central: Uint8Array<ArrayBuffer>[] = [];
   let offset = 0;
 
   for (const file of files) {
